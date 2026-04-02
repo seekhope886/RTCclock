@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 鬧鐘設定</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; padding: 20px; }
+        .container { max-width: 480px; margin: 0 auto; }
+        h1 { text-align: center; margin-bottom: 20px; color: #00d9ff; font-size: 1.5rem; }
+        .status { text-align: center; padding: 10px; margin-bottom: 20px; border-radius: 8px; font-size: 0.9rem; }
+        .status.success { background: #0f9d58; }
+        .status.error { background: #db4437; }
+        .status.info { background: #4285f4; }
+        .alarm-card { background: #16213e; border-radius: 12px; padding: 15px; margin-bottom: 12px; display: flex; align-items: center; gap: 10px; }
+        .alarm-num { font-size: 1.2rem; font-weight: bold; color: #00d9ff; min-width: 30px; }
+        .alarm-time { display: flex; align-items: center; gap: 5px; flex: 1; }
+        .alarm-time input { width: 60px; padding: 8px; border: none; border-radius: 6px; background: #0f3460; color: #fff; font-size: 1.1rem; text-align: center; }
+        .alarm-time span { font-size: 1.2rem; }
+        .toggle { position: relative; width: 50px; height: 26px; }
+        .toggle input { opacity: 0; width: 0; height: 0; }
+        .toggle .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: #444; border-radius: 26px; transition: 0.3s; }
+        .toggle .slider:before { content: ""; position: absolute; height: 20px; width: 20px; left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: 0.3s; }
+        .toggle input:checked + .slider { background: #00d9ff; }
+        .toggle input:checked + .slider:before { transform: translateX(24px); }
+        .btn-group { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 20px; }
+        .btn { padding: 12px; border: none; border-radius: 8px; font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: 0.2s; }
+        .btn-load { background: #f9a825; color: #000; }
+        .btn-apply { background: #00d9ff; color: #000; }
+        .btn-save { background: #0f9d58; color: #fff; }
+        .btn-cancel { background: #db4437; color: #fff; }
+        .btn:hover { opacity: 0.85; transform: scale(0.98); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .current-time { text-align: center; font-size: 1.8rem; margin: 20px 0; color: #00d9ff; font-weight: bold; }
+        .ip-info { text-align: center; color: #888; font-size: 0.85rem; margin-top: 15px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ESP32 鬧鐘設定</h1>
+        <div id="status" class="status info">載入中...</div>
+        <div id="currentTime" class="currentTime">--:--:--</div>
+        
+        <div id="alarmList"></div>
+        
+        <div class="btn-group">
+            <button class="btn btn-load" onclick="loadAlarms()">Load</button>
+            <button class="btn btn-apply" onclick="applyAlarms()">Apply</button>
+            <button class="btn btn-save" onclick="saveAlarms()">Save</button>
+            <button class="btn btn-cancel" onclick="cancelEdit()">Cancel</button>
+        </div>
+        
+        <div class="ip-info" id="ipInfo"></div>
+    </div>
+
+    <script>
+        let alarms = [];
+        const maxAlarms = 5;
+
+        function showStatus(msg, type = 'info') {
+            const el = document.getElementById('status');
+            el.textContent = msg;
+            el.className = 'status ' + type;
+        }
+
+        async function fetchAlarms() {
+            try {
+                const res = await fetch('/api/alarms');
+                alarms = await res.json();
+                renderAlarms();
+                showStatus('載入成功', 'success');
+            } catch (e) {
+                showStatus('載入失敗: ' + e.message, 'error');
+            }
+        }
+
+        async function loadAlarms() {
+            showStatus('Load...', 'info');
+            try {
+                const res = await fetch('/api/alarms?action=load');
+                alarms = await res.json();
+                renderAlarms();
+                showStatus('已從存檔載入', 'success');
+            } catch (e) {
+                showStatus('Load 失敗: ' + e.message, 'error');
+            }
+        }
+
+        async function applyAlarms() {
+            showStatus('Apply...', 'info');
+            collectFromUI();
+            try {
+                const res = await fetch('/api/alarms?action=apply', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(alarms)
+                });
+                const result = await res.json();
+                showStatus('已套用至系統 (重啟後生效)', 'success');
+            } catch (e) {
+                showStatus('Apply 失敗: ' + e.message, 'error');
+            }
+        }
+
+        async function saveAlarms() {
+            showStatus('Save...', 'info');
+            collectFromUI();
+            try {
+                const res = await fetch('/api/alarms?action=save', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(alarms)
+                });
+                const result = await res.json();
+                showStatus('已儲存到 SPIFFS', 'success');
+            } catch (e) {
+                showStatus('Save 失敗: ' + e.message, 'error');
+            }
+        }
+
+        function cancelEdit() {
+            fetchAlarms();
+            showStatus('已取消編輯', 'info');
+        }
+
+        function collectFromUI() {
+            for (let i = 0; i < maxAlarms; i++) {
+                const hour = parseInt(document.getElementById('hour' + i).value) || 0;
+                const minute = parseInt(document.getElementById('minute' + i).value) || 0;
+                const active = document.getElementById('active' + i).checked;
+                alarms[i] = { hour, minute, active };
+            }
+        }
+
+        function renderAlarms() {
+            const container = document.getElementById('alarmList');
+            container.innerHTML = '';
+            for (let i = 0; i < maxAlarms; i++) {
+                const a = alarms[i] || { hour: 0, minute: 0, active: false };
+                const div = document.createElement('div');
+                div.className = 'alarm-card';
+                div.innerHTML = `
+                    <div class="alarm-num">${i + 1}</div>
+                    <div class="alarm-time">
+                        <input type="number" id="hour${i}" min="0" max="23" value="${a.hour}">
+                        <span>:</span>
+                        <input type="number" id="minute${i}" min="0" max="59" value="${a.minute}">
+                    </div>
+                    <label class="toggle">
+                        <input type="checkbox" id="active${i}" ${a.active ? 'checked' : ''}>
+                        <span class="slider"></span>
+                    </label>
+                `;
+                container.appendChild(div);
+            }
+        }
+
+        async function updateTime() {
+            try {
+                const res = await fetch('/api/time');
+                const data = await res.json();
+                document.getElementById('currentTime').textContent = data.time;
+            } catch (e) {}
+        }
+
+        async function getIP() {
+            try {
+                const res = await fetch('/api/ip');
+                const data = await res.json();
+                document.getElementById('ipInfo').textContent = 'ESP32 IP: ' + data.ip;
+            } catch (e) {}
+        }
+
+        fetchAlarms();
+        setInterval(updateTime, 1000);
+        getIP();
+    </script>
+</body>
+</html>
